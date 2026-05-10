@@ -7,8 +7,6 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 import os
-import glob
-import re
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -20,40 +18,20 @@ st.set_page_config(page_title="农业环境决策系统", layout="wide")
 st.title("🌾 农业环境智能决策系统")
 st.markdown("基于历史日均数据，预测未来多天AQI")
 
-# ==================== 数据加载（自动匹配文件） ====================
+# ==================== 数据加载 ====================
 @st.cache_data
 def load_data():
-    # 自动查找所有匹配的 CSV 文件（忽略大小写）
-    pattern = re.compile(r'beijing_all_pollutants_hourly.*\.csv', re.IGNORECASE)
-    files = [f for f in os.listdir('.') if pattern.match(f)]
-    
-    if not files:
-        st.error("❌ 未找到任何数据文件！请确保 CSV 文件以 'beijing_all_pollutants_hourly' 开头，并位于 app.py 同目录。")
+    file_2025 = "beijing_all_pollutants_hourly.2025.csv"
+    file_2024 = "beijing_all_pollutants_hourly.2024.csv"
+    if os.path.exists(file_2025):
+        df_2025 = pd.read_csv(file_2025, encoding='utf-8')
+        st.sidebar.success("✅ 已加载 2025 年数据")
+    elif os.path.exists(file_2024):
+        df_2024 = pd.read_csv(file_2024, encoding='utf-8')
+        st.sidebar.info("📁 未找到2025年数据，使用2024年数据")
+    else:
+        st.error("❌ 未找到数据文件！请确保 CSV 文件在 app.py 同目录下。")
         st.stop()
-    
-    df_list = []
-    for file in files:
-        try:
-            df_temp = pd.read_csv(file, encoding='gb18030')
-            df_list.append(df_temp)
-            st.sidebar.success(f"✅ 已加载 {file}")
-        except Exception as e:
-            st.sidebar.error(f"读取 {file} 失败: {e}")
-    
-    if not df_list:
-        st.error("❌ 未能成功读取任何数据文件。")
-        st.stop()
-    
-    df = pd.concat(df_list, ignore_index=True)
-    
-    # 检查必要的列是否存在
-    required_cols = ['date', 'hour', 'station']
-    for col in required_cols:
-        if col not in df.columns:
-            st.error(f"❌ 数据文件缺少必要列: {col}")
-            st.stop()
-    
-    # 构造 datetime 列
     df['datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['hour'].astype(str) + ':00:00')
     df = df.sort_values(['station', 'datetime']).reset_index(drop=True)
     return df
@@ -102,7 +80,7 @@ ax1.set_title(f"{selected_station} 站点 AQI 日均值变化")
 ax1.grid(True, alpha=0.3)
 st.pyplot(fig1)
 
-# ==================== 2. PM2.5 和 O₃ 变化 ====================
+# ==================== 2. PM2.5 和 O₃ 变化（修复标签） ====================
 st.subheader("🌫️ 主要污染物变化（PM2.5 与 O₃）")
 fig2, ax2 = plt.subplots(figsize=(12, 4))
 ax2.plot(df_daily['datetime'], df_daily['PM2.5'], label='PM2.5 (µg/m³)', color='red', alpha=0.7)
@@ -116,7 +94,7 @@ ax2.set_ylim(0, max_val * 1.1 if max_val > 0 else 100)
 ax2.grid(True, alpha=0.3)
 st.pyplot(fig2)
 
-# ==================== 3. 空气质量等级分布饼图 ====================
+# ==================== 3. 空气质量等级分布饼图（合并小类别） ====================
 st.subheader("📊 空气质量等级分布")
 def aqi_level(aqi):
     if aqi <= 50: return "优"
@@ -135,19 +113,26 @@ if level_counts.sum() < total:
     level_counts['其他'] = total - level_counts.sum()
 
 fig3, ax3 = plt.subplots(figsize=(9, 9))
+# 不直接在饼图上显示类别标签，仅显示百分比，避免重叠
 wedges, texts, autotexts = ax3.pie(level_counts, labels=None, autopct='%1.1f%%',
                                    startangle=90, pctdistance=0.8,
                                    textprops={'fontsize': 12})
+# 添加图例，将类别放在图例中
 ax3.legend(wedges, level_counts.index, title="空气质量等级", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
 ax3.set_title(f"{selected_station} 站点空气质量等级分布", fontsize=14)
 ax3.axis('equal')
 plt.tight_layout()
 st.pyplot(fig3)
 
-# ==================== 4. 预测未来 AQI ====================
+
+# ==================== 4. 预测未来 AQI（集成模型：随机森林 + XGBoost 加权平均） ====================
 st.subheader(f"🔮 未来 {pred_days} 天 AQI 趋势预测（集成模型）")
 
 def prepare_features_multioutput(df_daily, target='AQI', n_lags=7, forecast_horizons=[1,2,3]):
+    """
+    构造特征矩阵 X 和多输出目标 y (每个 horizon 一列)
+    严格只返回数值列，排除任何字符串列
+    """
     df = df_daily.copy()
     # 时间特征
     df['dayofweek'] = df['datetime'].dt.dayofweek
@@ -159,18 +144,19 @@ def prepare_features_multioutput(df_daily, target='AQI', n_lags=7, forecast_hori
     # 滚动统计
     df['rolling_mean_3'] = df[target].rolling(3).mean()
     df['rolling_mean_7'] = df[target].rolling(7).mean()
-    # 其他污染物滞后
+    # 其他污染物滞后（如果存在）
     if 'PM2.5' in df.columns:
         df['pm25_lag1'] = df['PM2.5'].shift(1)
     if 'O3' in df.columns:
         df['o3_lag1'] = df['O3'].shift(1)
-    # 只保留数值列
+    # 删除所有非数值列
     df = df.select_dtypes(include=[np.number])
     df = df.dropna()
-    # 多输出目标
+    # 创建多输出目标
     for h in forecast_horizons:
         df[f'target_{h}'] = df[target].shift(-h)
     df = df.dropna()
+    # 特征列
     feature_cols = [c for c in df.columns if not c.startswith('target_') and c != target]
     X = df[feature_cols]
     y = df[[f'target_{h}' for h in forecast_horizons]]
@@ -190,12 +176,12 @@ else:
         future_dates = [(df_daily['datetime'].max() + timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(pred_days)]
         future_preds = [last_7] * pred_days
     else:
-        # 随机森林多输出模型
+        # 训练随机森林多输出模型
         rf_base = RandomForestRegressor(n_estimators=100, max_depth=8, random_state=42)
         rf_multi = MultiOutputRegressor(rf_base, n_jobs=-1)
         rf_multi.fit(X, y)
         
-        # 尝试 XGBoost
+        # 训练 XGBoost 多输出模型（需要安装 xgboost，如果没有则回退到随机森林）
         try:
             import xgboost as xgb
             xgb_base = xgb.XGBRegressor(n_estimators=100, max_depth=6, learning_rate=0.1,
@@ -207,11 +193,16 @@ else:
             use_xgb = False
             st.info("未安装 xgboost，仅使用随机森林进行预测。")
         
+        # 使用最新特征进行预测
         latest_features = X.iloc[-1:].copy()
         preds_rf = rf_multi.predict(latest_features)[0]
+        
         if use_xgb:
             preds_xgb = xgb_multi.predict(latest_features)[0]
-            preds = 0.5 * preds_rf + 0.5 * preds_xgb  # 加权平均
+            # 加权平均（等权重，也可根据验证集性能调整）
+            weight_rf = 0.5
+            weight_xgb = 0.5
+            preds = weight_rf * preds_rf + weight_xgb * preds_xgb
         else:
             preds = preds_rf
         
@@ -228,7 +219,7 @@ ax4.grid(True, alpha=0.3)
 ax4.legend()
 st.pyplot(fig4)
 
-# 预测表格
+# 显示预测表格
 pred_df = pd.DataFrame({"日期": future_dates, "预测AQI": [f"{v:.1f}" for v in future_preds]})
 st.table(pred_df)
 
@@ -266,4 +257,4 @@ for a in advice:
 with st.expander("📄 查看当前站点数据预览"):
     st.dataframe(df_hour.reset_index()[['datetime', 'AQI', 'PM2.5', 'O3']].head(20))
 
-st.caption("数据来源：北京市空气质量监测站点 | 预测模型：随机森林 + XGBoost（可选）加权集成 | 风险标准参考《环境空气质量标准》")
+st.caption("数据来源：北京市空气质量监测站点 | 预测模型：集成模型：随机森林 + XGBoost 加权平均（预测未来多天） | 风险标准参考《环境空气质量标准》")
