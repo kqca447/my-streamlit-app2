@@ -7,6 +7,8 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 import os
+import glob
+import re
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -18,35 +20,30 @@ st.set_page_config(page_title="农业环境决策系统", layout="wide")
 st.title("🌾 农业环境智能决策系统")
 st.markdown("基于历史日均数据，预测未来多天AQI")
 
-# ==================== 数据加载 ====================
+# ==================== 数据加载（自动匹配文件） ====================
 @st.cache_data
 def load_data():
-    file_2025 = "beijing_all_pollutants_hourly.2025.csv"
-    file_2024 = "beijing_all_pollutants_hourly.2024.csv"
+    # 自动查找所有匹配的 CSV 文件（忽略大小写）
+    pattern = re.compile(r'beijing_all_pollutants_hourly.*\.csv', re.IGNORECASE)
+    files = [f for f in os.listdir('.') if pattern.match(f)]
     
-    df_list = []
-    # 尝试加载2025年数据
-    if os.path.exists(file_2025):
-        try:
-            df_2025 = pd.read_csv(file_2025, encoding='gb18030')
-            df_list.append(df_2025)
-            st.sidebar.success("✅ 已加载 2025 年数据")
-        except Exception as e:
-            st.sidebar.error(f"读取2025年数据失败: {e}")
-    # 尝试加载2024年数据
-    if os.path.exists(file_2024):
-        try:
-            df_2024 = pd.read_csv(file_2024, encoding='gb18030')
-            df_list.append(df_2024)
-            st.sidebar.info("📁 已加载 2024 年数据")
-        except Exception as e:
-            st.sidebar.error(f"读取2024年数据失败: {e}")
-    
-    if not df_list:
-        st.error("❌ 未找到任何有效的数据文件！请确保 CSV 文件在 app.py 同目录下。")
+    if not files:
+        st.error("❌ 未找到任何数据文件！请确保 CSV 文件以 'beijing_all_pollutants_hourly' 开头，并位于 app.py 同目录。")
         st.stop()
     
-    # 合并所有数据
+    df_list = []
+    for file in files:
+        try:
+            df_temp = pd.read_csv(file, encoding='gb18030')
+            df_list.append(df_temp)
+            st.sidebar.success(f"✅ 已加载 {file}")
+        except Exception as e:
+            st.sidebar.error(f"读取 {file} 失败: {e}")
+    
+    if not df_list:
+        st.error("❌ 未能成功读取任何数据文件。")
+        st.stop()
+    
     df = pd.concat(df_list, ignore_index=True)
     
     # 检查必要的列是否存在
@@ -269,4 +266,4 @@ for a in advice:
 with st.expander("📄 查看当前站点数据预览"):
     st.dataframe(df_hour.reset_index()[['datetime', 'AQI', 'PM2.5', 'O3']].head(20))
 
-st.caption("数据来源：北京市空气质量监测站点 | 预测模型：集成模型：随机森林 + XGBoost 加权平均（预测未来多天） | 风险标准参考《环境空气质量标准》")
+st.caption("数据来源：北京市空气质量监测站点 | 预测模型：随机森林 + XGBoost（可选）加权集成 | 风险标准参考《环境空气质量标准》")
