@@ -24,10 +24,10 @@ def load_data():
     file_2025 = "beijing_all_pollutants_hourly.2025.csv"
     file_2024 = "beijing_all_pollutants_hourly.2024.csv"
     if os.path.exists(file_2025):
-        df_2025 = pd.read_csv(file_2025, encoding='gbk')
+        df_2025 = pd.read_csv(file_2025, encoding='utf-8')
         st.sidebar.success("✅ 已加载 2025 年数据")
     elif os.path.exists(file_2024):
-        df_2024 = pd.read_csv(file_2024, encoding='gbk')
+        df_2024 = pd.read_csv(file_2024, encoding='utf-8')
         st.sidebar.info("📁 未找到2025年数据，使用2024年数据")
     else:
         st.error("❌ 未找到数据文件！请确保 CSV 文件在 app.py 同目录下。")
