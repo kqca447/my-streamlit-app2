@@ -2,27 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
-
-# 查找系统支持中文的字体
-def get_chinese_font():
-    # Linux 上常见的中文字体名称
-    font_names = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 
-                  'Droid Sans Fallback', 'SimHei', 'Microsoft YaHei']
-    for name in font_names:
-        for font in fm.fontManager.ttflist:
-            if name.lower() in font.name.lower():
-                return font.name
-    # 如果都没找到，尝试查找任何包含 'CJK' 或 'Hei' 的字体
-    for font in fm.fontManager.ttflist:
-        if 'cjk' in font.name.lower() or 'hei' in font.name.lower() or 'zen' in font.name.lower():
-            return font.name
-    return 'sans-serif'  # 最终回退
-
-chinese_font = get_chinese_font()
-plt.rcParams['font.sans-serif'] = [chinese_font]
-plt.rcParams['axes.unicode_minus'] = False
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
@@ -32,9 +12,27 @@ import re
 import warnings
 warnings.filterwarnings('ignore')
 
-# ==================== 强制中文显示（避免字体警告） ====================
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'Liberation Sans']  # 使用通用英文字体
+# ==================== 自动查找中文字体（解决 Linux 乱码） ====================
+def get_chinese_font():
+    # 常见中文字体名称（按优先级）
+    font_names = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'Noto Sans CJK TC',
+                  'Droid Sans Fallback', 'SimHei', 'Microsoft YaHei']
+    for name in font_names:
+        for font in fm.fontManager.ttflist:
+            if name.lower() in font.name.lower():
+                return font.name
+    # 如果都没找到，尝试模糊匹配
+    for font in fm.fontManager.ttflist:
+        if any(key in font.name.lower() for key in ['cjk', 'hei', 'zen', 'droidsansfallback']):
+            return font.name
+    return 'sans-serif'  # 最终回退
+
+chinese_font = get_chinese_font()
+plt.rcParams['font.sans-serif'] = [chinese_font]
 plt.rcParams['axes.unicode_minus'] = False
+
+# 可选：在日志中显示使用的字体（调试用）
+print(f"Using font: {chinese_font}")
 
 st.set_page_config(page_title="农业环境决策系统", layout="wide")
 st.title("🌾 农业环境智能决策系统")
