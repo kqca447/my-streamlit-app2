@@ -2,6 +2,27 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+# 查找系统支持中文的字体
+def get_chinese_font():
+    # Linux 上常见的中文字体名称
+    font_names = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 
+                  'Droid Sans Fallback', 'SimHei', 'Microsoft YaHei']
+    for name in font_names:
+        for font in fm.fontManager.ttflist:
+            if name.lower() in font.name.lower():
+                return font.name
+    # 如果都没找到，尝试查找任何包含 'CJK' 或 'Hei' 的字体
+    for font in fm.fontManager.ttflist:
+        if 'cjk' in font.name.lower() or 'hei' in font.name.lower() or 'zen' in font.name.lower():
+            return font.name
+    return 'sans-serif'  # 最终回退
+
+chinese_font = get_chinese_font()
+plt.rcParams['font.sans-serif'] = [chinese_font]
+plt.rcParams['axes.unicode_minus'] = False
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
