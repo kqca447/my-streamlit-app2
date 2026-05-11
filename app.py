@@ -13,26 +13,24 @@ warnings.filterwarnings('ignore')
 
 # 全局异常捕获，显示详细错误
 try:
-    # ==================== 自动查找中文字体（解决 Linux 乱码） ====================
-    def get_chinese_font():
+    # ==================== 直接加载上传的中文字体文件 ====================
+    font_path = 'wqy-microhei.ttc'   # 请确保文件名与上传的完全一致
+    if os.path.exists(font_path):
         try:
-            font_names = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'Noto Sans CJK TC',
-                          'Droid Sans Fallback', 'SimHei', 'Microsoft YaHei']
-            for name in font_names:
-                for font in fm.fontManager.ttflist:
-                    if name.lower() in font.name.lower():
-                        return font.name
-            for font in fm.fontManager.ttflist:
-                if any(key in font.name.lower() for key in ['cjk', 'hei', 'zen', 'droidsansfallback']):
-                    return font.name
-        except Exception:
-            pass
-        return 'sans-serif'
-
-    chinese_font = get_chinese_font()
-    plt.rcParams['font.sans-serif'] = [chinese_font]
-    plt.rcParams['axes.unicode_minus'] = False
-    print(f"Using font: {chinese_font}")
+            fm.fontManager.addfont(font_path)
+            prop = fm.FontProperties(fname=font_path)
+            font_name = prop.get_name()
+            plt.rcParams['font.sans-serif'] = [font_name]
+            plt.rcParams['axes.unicode_minus'] = False
+            st.sidebar.success(f"✅ 中文字体加载成功: {font_name}")
+        except Exception as e:
+            st.sidebar.error(f"字体加载失败: {e}")
+            plt.rcParams['font.sans-serif'] = ['sans-serif']
+            plt.rcParams['axes.unicode_minus'] = False
+    else:
+        st.sidebar.warning(f"字体文件 {font_path} 未找到，请确保已上传。图表中文可能显示为方框。")
+        plt.rcParams['font.sans-serif'] = ['sans-serif']
+        plt.rcParams['axes.unicode_minus'] = False
 
     st.set_page_config(page_title="农业环境决策系统", layout="wide")
     st.title("🌾 农业环境智能决策系统")
