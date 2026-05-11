@@ -11,6 +11,14 @@ import re
 import warnings
 warnings.filterwarnings('ignore')
 
+# 尝试导入 LightGBM
+try:
+    import lightgbm as lgb
+    LGB_AVAILABLE = True
+except ImportError:
+    LGB_AVAILABLE = False
+    st.warning("LightGBM 未安装，将仅使用随机森林进行预测。")
+
 # 全局异常捕获，显示详细错误
 try:
     # ==================== 直接加载上传的中文字体文件 ====================
@@ -34,7 +42,7 @@ try:
 
     st.set_page_config(page_title="农业环境决策系统", layout="wide")
     st.title("🌾 农业环境智能决策系统")
-    st.markdown("基于历史日均数据，预测未来多天AQI")
+    st.markdown("基于历史日均数据，预测未来多天AQI（LightGBM + 随机森林融合）")
 
     # ==================== 数据加载（只加载最新一年，减少内存） ====================
     @st.cache_data
@@ -118,6 +126,12 @@ try:
             return None, loaded_info, f"时间列转换失败: {e}"
 
         df = df.sort_values(['station', 'datetime']).reset_index(drop=True)
+        # 优化数据类型以节省内存
+        df['AQI'] = df['AQI'].astype(np.float32)
+        if 'PM2.5' in df.columns:
+            df['PM2.5'] = df['PM2.5'].astype(np.float32)
+        if 'O3' in df.columns:
+            df['O3'] = df['O3'].astype(np.float32)
         return df, loaded_info, None
 
     # 加载数据
@@ -232,72 +246,86 @@ try:
     plt.tight_layout()
     st.pyplot(fig3)
 
-    # ==================== 4. 预测未来 AQI ====================
-    st.subheader(f"🔮 未来 {pred_days} 天 AQI 趋势预测（集成模型）")
+    # ==================== 4. 预测未来 AQI（LightGBM + 随机森林融合） ====================
+    st.subheader(f"🔮 未来 {pred_days} 天 AQI 趋势预测（LightGBM + 随机森林融合）")
 
     def prepare_features_multioutput(df_daily, target='AQI', n_lags=7, forecast_horizons=[1,2,3]):
         df = df_daily.copy()
+        # 时间特征（减少特征维度，去除 dayofyear 以节约内存）
         df['dayofweek'] = df['datetime'].dt.dayofweek
         df['month'] = df['datetime'].dt.month
-        df['dayofyear'] = df['datetime'].dt.dayofyear
+        # 滞后特征
         for lag in range(1, n_lags+1):
             df[f'lag_{lag}'] = df[target].shift(lag)
-        df['rolling_mean_3'] = df[target].rolling(3).mean()
-        df['rolling_mean_7'] = df[target].rolling(7).mean()
+        # 滚动统计（只保留一个滚动窗口）
+        df['rolling_mean_7'] = df[target].rolling(7, min_periods=1).mean()
         if 'PM2.5' in df.columns:
             df['pm25_lag1'] = df['PM2.5'].shift(1)
         if 'O3' in df.columns:
             df['o3_lag1'] = df['O3'].shift(1)
+        # 只保留数值列并删除缺失值
         df = df.select_dtypes(include=[np.number]).dropna()
+        # 多输出目标
         for h in forecast_horizons:
             df[f'target_{h}'] = df[target].shift(-h)
         df = df.dropna()
+        # 特征列和目标列
         feature_cols = [c for c in df.columns if not c.startswith('target_') and c != target]
-        X = df[feature_cols]
-        y = df[[f'target_{h}' for h in forecast_horizons]]
+        X = df[feature_cols].astype(np.float32)
+        y = df[[f'target_{h}' for h in forecast_horizons]].astype(np.float32)
         return X, y, feature_cols
 
-    if len(df_daily) < 30:
+    if len(df_daily) < 20:
         st.warning("历史数据不足，无法训练模型，使用简单移动平均预测。")
-        last_7 = df_daily['AQI'].iloc[-7:].mean()
+        last_7 = df_daily['AQI'].iloc[-min(7, len(df_daily)):].mean()
         future_dates = [(df_daily['datetime'].max() + timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(pred_days)]
         future_preds = [last_7] * pred_days
     else:
         horizons = list(range(1, pred_days+1))
-        X, y, feature_cols = prepare_features_multioutput(df_daily, forecast_horizons=horizons)
+        X, y, feature_cols = prepare_features_multioutput(df_daily, n_lags=5, forecast_horizons=horizons)  # 使用5天滞后减少特征
         if len(X) < 20:
             st.warning("有效样本不足，使用移动平均。")
             last_7 = df_daily['AQI'].iloc[-7:].mean()
             future_dates = [(df_daily['datetime'].max() + timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(pred_days)]
             future_preds = [last_7] * pred_days
         else:
-            rf_base = RandomForestRegressor(n_estimators=100, max_depth=8, random_state=42)
+            # 训练随机森林（减少树的数量和深度）
+            rf_base = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=42, n_jobs=-1)
             rf_multi = MultiOutputRegressor(rf_base, n_jobs=-1)
             rf_multi.fit(X, y)
-            try:
-                import xgboost as xgb
-                xgb_base = xgb.XGBRegressor(n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42)
-                xgb_multi = MultiOutputRegressor(xgb_base, n_jobs=-1)
-                xgb_multi.fit(X, y)
-                use_xgb = True
-            except ImportError:
-                use_xgb = False
-                st.info("未安装 xgboost，仅使用随机森林进行预测。")
-            latest_features = X.iloc[-1:].copy()
-            preds_rf = rf_multi.predict(latest_features)[0]
-            if use_xgb:
-                preds_xgb = xgb_multi.predict(latest_features)[0]
-                preds = 0.5 * preds_rf + 0.5 * preds_xgb
+            preds_rf = rf_multi.predict(X.iloc[-1:])[0]
+            
+            # 训练 LightGBM（如果可用）
+            if LGB_AVAILABLE:
+                lgb_base = lgb.LGBMRegressor(
+                    n_estimators=80, 
+                    max_depth=5, 
+                    learning_rate=0.05, 
+                    num_leaves=31,
+                    random_state=42,
+                    verbose=-1
+                )
+                lgb_multi = MultiOutputRegressor(lgb_base, n_jobs=-1)
+                lgb_multi.fit(X, y)
+                preds_lgb = lgb_multi.predict(X.iloc[-1:])[0]
+                # 加权融合（可调整权重）
+                weight_rf = 0.5
+                weight_lgb = 0.5
+                preds = weight_rf * preds_rf + weight_lgb * preds_lgb
+                st.info("使用 LightGBM + 随机森林加权融合进行预测。")
             else:
                 preds = preds_rf
+                st.info("仅使用随机森林进行预测。")
+            
             future_preds = preds.tolist()
             future_dates = [(df_daily['datetime'].max() + timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(pred_days)]
 
+    # 绘制预测图
     fig4, ax4 = plt.subplots(figsize=(10, 5))
-    ax4.plot(future_dates, future_preds, marker='o', linestyle='-', color='red', linewidth=2, label='集成模型预测值')
+    ax4.plot(future_dates, future_preds, marker='o', linestyle='-', color='red', linewidth=2, label='融合模型预测值')
     ax4.set_xlabel("日期")
     ax4.set_ylabel("AQI")
-    ax4.set_title(f"{selected_station} 站点未来{pred_days}天AQI预测")
+    ax4.set_title(f"{selected_station} 站点未来{pred_days}天AQI预测（融合模型）")
     ax4.grid(True, alpha=0.3)
     ax4.legend()
     st.pyplot(fig4)
@@ -344,7 +372,7 @@ try:
             preview_cols.append('O3')
         st.dataframe(df_hour.reset_index()[preview_cols].head(20))
 
-    st.caption("数据来源：北京市空气质量监测站点 | 预测模型：随机森林 + XGBoost（可选）加权集成 | 风险标准参考《环境空气质量标准》")
+    st.caption("数据来源：北京市空气质量监测站点 | 预测模型：LightGBM + 随机森林加权融合 | 风险标准参考《环境空气质量标准》")
 
 except Exception as e:
     st.error(f"❌ 应用发生错误，详细信息如下：")
